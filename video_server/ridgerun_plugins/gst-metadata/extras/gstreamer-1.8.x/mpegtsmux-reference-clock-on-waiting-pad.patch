@@ -1,0 +1,89 @@
+From 5ea8e86c676e32232e471f14cf4fe7e30a795b88 Mon Sep 17 00:00:00 2001
+From: Greivin Fallas <greivin.fallas@ridgerun.com>
+Date: Mon, 26 Oct 2020 19:30:24 -0600
+Subject: [PATCH] Mpegtsmux reference clock on waiting pad
+
+---
+ gst/mpegtsmux/mpegtsmux.c | 52 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 52 insertions(+)
+
+diff --git a/gst/mpegtsmux/mpegtsmux.c b/gst/mpegtsmux/mpegtsmux.c
+index 4c68e3e..1c9d3e6 100644
+--- a/gst/mpegtsmux/mpegtsmux.c
++++ b/gst/mpegtsmux/mpegtsmux.c
+@@ -180,6 +180,9 @@ static void mpegtsmux_prepare_srcpad (MpegTsMux * mux);
+ GstFlowReturn mpegtsmux_clip_inc_running_time (GstCollectPads * pads,
+     GstCollectData * cdata, GstBuffer * buf, GstBuffer ** outbuf,
+     gpointer user_data);
++gint mpegtsmux_compare_function (GstCollectPads * pads,
++    GstCollectData * data1, GstClockTime timestamp1,
++    GstCollectData * data2, GstClockTime timestamp2, gpointer user_data);
+ static GstFlowReturn mpegtsmux_collected_buffer (GstCollectPads * pads,
+     GstCollectData * data, GstBuffer * buf, MpegTsMux * mux);
+ 
+@@ -321,6 +324,9 @@ mpegtsmux_init (MpegTsMux * mux)
+   gst_collect_pads_set_clip_function (mux->collect, (GstCollectPadsClipFunction)
+       GST_DEBUG_FUNCPTR (mpegtsmux_clip_inc_running_time), mux);
+ 
++  gst_collect_pads_set_compare_function (mux->collect,
++      (GstCollectPadsCompareFunction)
++      GST_DEBUG_FUNCPTR (mpegtsmux_compare_function), mux);
+   mux->adapter = gst_adapter_new ();
+   mux->out_adapter = gst_adapter_new ();
+ 
+@@ -1106,6 +1112,52 @@ out:
+   return event;
+ }
+ 
++
++gint
++mpegtsmux_compare_function (GstCollectPads * pads,
++    GstCollectData * data1, GstClockTime timestamp1,
++    GstCollectData * data2, GstClockTime timestamp2, gpointer user_data)
++{
++
++  MpegTsMux *mux = GST_MPEG_TSMUX (user_data);
++
++  GST_LOG_OBJECT (pads, "comparing %" GST_TIME_FORMAT
++      " and %" GST_TIME_FORMAT, GST_TIME_ARGS (timestamp1),
++      GST_TIME_ARGS (timestamp2));
++
++  /* prefer a buffer for a waiting pad when starting to
++     avoid that a non-waiting pad be selected as the pcr stream */
++  if (mux->first) {
++    gboolean data1_waiting;
++    gboolean data2_waiting;
++
++    data1_waiting =
++        GST_COLLECT_PADS_STATE_IS_SET (data1, GST_COLLECT_PADS_STATE_WAITING);
++    data2_waiting =
++        GST_COLLECT_PADS_STATE_IS_SET (data2, GST_COLLECT_PADS_STATE_WAITING);
++
++    if (data1_waiting != data2_waiting) {
++      return data1_waiting ? -1 : 1;
++    }
++
++  }
++  /* non-valid timestamps go first as they are probably headers or so */
++  if (G_UNLIKELY (!GST_CLOCK_TIME_IS_VALID (timestamp1)))
++    return GST_CLOCK_TIME_IS_VALID (timestamp2) ? -1 : 0;
++
++  if (G_UNLIKELY (!GST_CLOCK_TIME_IS_VALID (timestamp2)))
++    return 1;
++
++  /* compare timestamp */
++  if (timestamp1 < timestamp2)
++    return -1;
++
++  if (timestamp1 > timestamp2)
++    return 1;
++
++  return 0;
++}
++
+ GstFlowReturn
+ mpegtsmux_clip_inc_running_time (GstCollectPads * pads,
+     GstCollectData * cdata, GstBuffer * buf, GstBuffer ** outbuf,
+-- 
+2.7.4
+

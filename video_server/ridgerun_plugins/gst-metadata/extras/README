@@ -1,0 +1,28 @@
+This folder contains a set of patches necessary to support metadata.
+
+The patches to apply depend on the GStreamer version needed,
+use the patches within each folder accordingly.
+
+
+Patches description:
+
+----------------------------------------------------------
+Patch:      evaluation-mode.patch
+Target:     gstreamer/
+Required:   Only for evaluation
+----------------------------------------------------------
+Patch:      fix-sparse-flag-setting-up.patch
+Target:     gstreamer/
+Required:   YES
+----------------------------------------------------------
+Patch:      mpegtsmux-reference-clock-on-waiting-pad.patch
+Target:     gst-plugins-bad/
+Required:   YES
+----------------------------------------------------------
+Patch:      mpegtsmux-meta-specific-pad-templates.patch
+Target:     gst-plugins-bad/
+Required:   YES
+----------------------------------------------------------
+Patch:      tsmux-demux-update-klv-support.patch
+Target:     gst-plugins-bad/
+Required:   YES

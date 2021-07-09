@@ -1,0 +1,16 @@
+# the standard variables don't make sense for an uninstalled copy
+prefix=
+exec_prefix=
+libdir=
+# includedir is builddir because it is used to find gstconfig.h in places
+includedir=/video_server/ridgerun_plugins/gst-plugins-base/gst-libs
+pluginsdir=/video_server/ridgerun_plugins/gst-plugins-base
+
+Name: GStreamer Base Plugins Libraries, Uninstalled
+Description: Streaming media framework, base plugins libraries, uninstalled
+Version: 1.14.5
+Requires: gstreamer-1.0
+Libs: -L@allocatorslibdir@ -L@applibdir@ -L@audiolibdir@ -L@fftlibdir@ -L@pbutilslibdir@ -L@rifflibdir@ -L@rtplibdir@ -L@rtsplibdir@ -L@sdplibdir@ -L@taglibdir@ -L@videolibdir@ -L@gllibdir@
+Cflags: -I/video_server/ridgerun_plugins/gst-plugins-base/gst-libs -I/video_server/ridgerun_plugins/gst-plugins-base/gst-libs
+
+libraries=allocators app audio fft pbutils riff rtp rtsp sdp tag video gl

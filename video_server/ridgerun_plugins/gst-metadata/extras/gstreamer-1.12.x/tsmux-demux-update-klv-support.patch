@@ -1,0 +1,891 @@
+From 3dfc77d60e6deb58a8b91b868ca415d2faec07d0 Mon Sep 17 00:00:00 2001
+From: Greivin Fallas <greivin.fallas@ridgerun.com>
+Date: Thu, 26 Nov 2020 03:44:47 -0600
+Subject: [PATCH] tsmux-demux update klv support
+
+---
+ gst-libs/gst/codecparsers/Makefile.am     |   6 +-
+ gst-libs/gst/codecparsers/gstklvmeta.c    | 137 ++++++++++++++++++++++++++++++
+ gst-libs/gst/codecparsers/gstklvmeta.h    |  75 ++++++++++++++++
+ gst-libs/gst/mpegts/gstmpegtsdescriptor.c |  64 ++++++++++++++
+ gst-libs/gst/mpegts/gstmpegtsdescriptor.h |  12 +++
+ gst/mpegtsdemux/gstmpegdesc.h             |  13 +++
+ gst/mpegtsdemux/mpegtsbase.c              |  21 +++++
+ gst/mpegtsdemux/tsdemux.c                 |  72 +++++++++++++++-
+ gst/mpegtsmux/Makefile.am                 |   1 +
+ gst/mpegtsmux/mpegtsmux.c                 |  47 +++++++++-
+ gst/mpegtsmux/tsmux/tsmux.c               |  11 ++-
+ gst/mpegtsmux/tsmux/tsmuxstream.c         |  41 +++++++--
+ gst/mpegtsmux/tsmux/tsmuxstream.h         |  14 ++-
+ 13 files changed, 497 insertions(+), 17 deletions(-)
+ create mode 100644 gst-libs/gst/codecparsers/gstklvmeta.c
+ create mode 100644 gst-libs/gst/codecparsers/gstklvmeta.h
+
+diff --git a/gst-libs/gst/codecparsers/Makefile.am b/gst-libs/gst/codecparsers/Makefile.am
+index e7d8248..627e590 100644
+--- a/gst-libs/gst/codecparsers/Makefile.am
++++ b/gst-libs/gst/codecparsers/Makefile.am
+@@ -7,7 +7,8 @@ libgstcodecparsers_@GST_API_VERSION@_la_SOURCES = \
+ 	gstjpegparser.c \
+ 	gstmpegvideometa.c \
+ 	gstjpeg2000sampling.c \
+-	gstvp9parser.c vp9utils.c
++	gstvp9parser.c vp9utils.c \
++	gstklvmeta.c
+ 
+ libgstcodecparsers_@GST_API_VERSION@includedir = \
+ 	$(includedir)/gstreamer-@GST_API_VERSION@/gst/codecparsers
+@@ -20,7 +21,8 @@ libgstcodecparsers_@GST_API_VERSION@include_HEADERS = \
+ 	gstjpegparser.h \
+ 	gstmpegvideometa.h \
+ 	gstjpeg2000sampling.h \
+-	gstvp9parser.h
++	gstvp9parser.h \
++	gstklvmeta.h
+ 
+ libgstcodecparsers_@GST_API_VERSION@_la_CFLAGS = \
+ 	$(GST_PLUGINS_BAD_CFLAGS) \
+diff --git a/gst-libs/gst/codecparsers/gstklvmeta.c b/gst-libs/gst/codecparsers/gstklvmeta.c
+new file mode 100644
+index 0000000..6f1e1b2
+--- /dev/null
++++ b/gst-libs/gst/codecparsers/gstklvmeta.c
+@@ -0,0 +1,137 @@
++/*
++ * GStreamer
++ * Copyright (C) 2017 Michael Fien <mfien@harris.com>
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ */
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include "gstklvmeta.h"
++
++GST_DEBUG_CATEGORY (klv_meta_debug);
++#define GST_CAT_DEFAULT klv_meta_debug
++
++static gboolean
++gst_klv_meta_init (GstKlvMeta * klv_meta, gpointer params, GstBuffer * buffer)
++{
++  klv_meta->metadata_service_id = 0;
++  klv_meta->sequence_number = 0;
++  klv_meta->flags = 0;
++  klv_meta->au_cell_data_length = 0;
++
++  return TRUE;
++}
++
++static void
++gst_klv_meta_free (GstKlvMeta * klv_meta, GstBuffer * buffer)
++{
++}
++
++static gboolean
++gst_klv_meta_transform (GstBuffer * dest, GstMeta * meta,
++    GstBuffer * buffer, GQuark type, gpointer data)
++{
++  GstKlvMeta *smeta, *dmeta;
++
++  smeta = (GstKlvMeta *) meta;
++
++  if (GST_META_TRANSFORM_IS_COPY (type)) {
++    GstMetaTransformCopy *copy = data;
++
++    if (!copy->region) {
++      /* only copy if the complete data is copied as well */
++      dmeta =
++          gst_buffer_add_klv_meta (dest, smeta->metadata_service_id,
++          smeta->sequence_number, smeta->flags, smeta->au_cell_data_length);
++
++      if (!dmeta)
++        return FALSE;
++    }
++  } else {
++    /* return FALSE, if transform type is not supported */
++    return FALSE;
++  }
++
++  return TRUE;
++}
++
++GType
++gst_klv_meta_api_get_type (void)
++{
++  static volatile GType type;
++  static const gchar *tags[] = { "au_header", NULL };   /* don't know what to set here */
++
++  if (g_once_init_enter (&type)) {
++    GType _type = gst_meta_api_type_register ("GstKlvMetaAPI", tags);
++    GST_DEBUG_CATEGORY_INIT (klv_meta_debug, "klvmeta", 0, "KLV GstMeta");
++
++    g_once_init_leave (&type, _type);
++  }
++  return type;
++}
++
++const GstMetaInfo *
++gst_klv_meta_get_info (void)
++{
++  static const GstMetaInfo *klv_meta_info = NULL;
++
++  if (g_once_init_enter ((GstMetaInfo **) & klv_meta_info)) {
++    const GstMetaInfo *meta = gst_meta_register (GST_KLV_META_API_TYPE,
++        "GstKlvMeta", sizeof (GstKlvMeta),
++        (GstMetaInitFunction) gst_klv_meta_init,
++        (GstMetaFreeFunction) gst_klv_meta_free,
++        (GstMetaTransformFunction) gst_klv_meta_transform);
++    g_once_init_leave ((GstMetaInfo **) & klv_meta_info, (GstMetaInfo *) meta);
++  }
++
++  return klv_meta_info;
++}
++
++/**
++ * gst_buffer_add_klv_meta:
++ * @buffer: a #GstBuffer
++ *
++ * Creates and adds a #GstKlvMeta to a @buffer.
++ *
++ * Returns: (transfer full): a newly created #GstKlvMeta
++ *
++ * Since: 1.2
++ */
++GstKlvMeta *
++gst_buffer_add_klv_meta (GstBuffer * buffer,
++    const guint8 metadata_service_id,
++    const guint8 sequence_number,
++    const guint8 flags, const guint16 au_cell_data_length)
++{
++  GstKlvMeta *klv_meta;
++
++  klv_meta =
++      (GstKlvMeta *) gst_buffer_add_meta (buffer, GST_KLV_META_INFO, NULL);
++
++  GST_DEBUG
++      ("metadata_service_id:%i, sequence_number:%i, flags:%i, au_cell_data_length:%i",
++      metadata_service_id, sequence_number, flags, au_cell_data_length);
++
++  klv_meta->metadata_service_id = metadata_service_id;
++  klv_meta->sequence_number = sequence_number;
++  klv_meta->flags = flags;
++  klv_meta->au_cell_data_length = au_cell_data_length;
++
++  return klv_meta;
++}
+diff --git a/gst-libs/gst/codecparsers/gstklvmeta.h b/gst-libs/gst/codecparsers/gstklvmeta.h
+new file mode 100644
+index 0000000..10784d8
+--- /dev/null
++++ b/gst-libs/gst/codecparsers/gstklvmeta.h
+@@ -0,0 +1,75 @@
++/* Gstreamer
++ * Copyright (C) <2017> Michael Fien <mfien@harris.com>
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ */
++
++#ifndef __GST_KLV_META_H__
++#define __GST_KLV_META_H__
++
++#include <gst/gst.h>
++// #include <gst/codecparsers/codecparsers-prelude.h>
++
++G_BEGIN_DECLS
++
++typedef struct _GstKlvMeta GstKlvMeta;
++
++GST_EXPORT
++GType gst_klv_meta_api_get_type (void);
++#define GST_KLV_META_API_TYPE  (gst_klv_meta_api_get_type())
++#define GST_KLV_META_INFO  (gst_klv_meta_get_info())
++const GstMetaInfo * gst_klv_meta_get_info (void);
++
++/**
++ * GstKlvMeta:
++ * @meta: parent #GstMeta
++ * @metadata_service_id: the Metadata service id
++ * @sequence_number: the sequence number
++ * @flags: the flags
++ * @au_cell_data_length: the AU cell data length
++ *
++ * Extra buffer metadata describing Metadata AU header.
++ *
++ * Can be used by mpegtsmuxer add metadata au header back to
++ * synchronous KLV metadata per MISB 0604.
++ *
++ * The various fields are only valid during the lifetime of the #GstKlvMeta.
++ * If elements wish to use those for longer, they are required to make a copy.
++ *
++ * Since: 1.2
++ */
++struct _GstKlvMeta {
++  GstMeta            meta;
++
++  guint8             metadata_service_id;
++  guint8             sequence_number;
++  guint8             flags;
++  guint16            au_cell_data_length;
++};
++
++
++#define gst_buffer_get_klv_meta(b) ((GstKlvMeta*)gst_buffer_get_meta((b),GST_KLV_META_API_TYPE))
++
++GST_EXPORT
++GstKlvMeta * gst_buffer_add_klv_meta (GstBuffer * buffer,
++                                      const guint8 metadata_service_id,
++                                      const guint8 sequence_number,
++                                      const guint8 flags,
++                                      const guint16 au_cell_data_length);
++
++G_END_DECLS
++
++#endif
+diff --git a/gst-libs/gst/mpegts/gstmpegtsdescriptor.c b/gst-libs/gst/mpegts/gstmpegtsdescriptor.c
+index 079716e..2fd89b0 100644
+--- a/gst-libs/gst/mpegts/gstmpegtsdescriptor.c
++++ b/gst-libs/gst/mpegts/gstmpegtsdescriptor.c
+@@ -4,6 +4,7 @@
+  * 
+  * Authors:
+  *   Edward Hervey <edward@collabora.com>
++ *   Michael Fien <mfien@harris.com>
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Library General Public
+@@ -1151,3 +1152,66 @@ gst_mpegts_descriptor_from_custom_with_extension (guint8 tag,
+ 
+   return descriptor;
+ }
++
++/* GST_MTS_DESC_METADATA (0x26) */
++/**
++ * gst_mpegts_descriptor_from_metadata:
++ * @format_identifier: (transfer none): a 4 character format identifier string
++ * @additional_info: (transfer none) (allow-none): pointer to optional additional info
++ * @additional_info_length: length of the optional @additional_info
++ *
++ * Creates a %GST_MTS_DESC_METADATA #GstMpegtsDescriptor
++ *
++ * Return: #GstMpegtsDescriptor, %NULL on failure
++ */
++GstMpegtsDescriptor *
++gst_mpegts_descriptor_from_metadata (guint application_format, guint format)
++{
++  GstMpegtsDescriptor *descriptor;
++
++  descriptor = _new_descriptor (GST_MTS_DESC_METADATA, 9);
++
++  descriptor->data[2] = (application_format & 0xff00) >> 8;
++  descriptor->data[3] = (application_format & 0xff);
++  descriptor->data[4] = format;
++  descriptor->data[5] = 'K';
++  descriptor->data[6] = 'L';
++  descriptor->data[7] = 'V';
++  descriptor->data[8] = 'A';
++  descriptor->data[9] = 0;
++  descriptor->data[10] = 0x0f;
++
++  return descriptor;
++}
++
++/* GST_MTS_DESC_METADATA_STD (0x27) */
++/**
++ * gst_mpegts_descriptor_from_metadata_std:
++ * @format_identifier: (transfer none): a 4 character format identifier string
++ * @additional_info: (transfer none) (allow-none): pointer to optional additional info
++ * @additional_info_length: length of the optional @additional_info
++ *
++ * Creates a %GST_MTS_DESC_METADATA_STD #GstMpegtsDescriptor
++ *
++ * Return: #GstMpegtsDescriptor, %NULL on failure
++ */
++GstMpegtsDescriptor *
++gst_mpegts_descriptor_from_metadata_std (guint input_leak_rate,
++    guint buffer_size, guint output_leak_rate)
++{
++  GstMpegtsDescriptor *descriptor;
++
++  descriptor = _new_descriptor (GST_MTS_DESC_METADATA_STD, 9);
++
++  descriptor->data[2] = ((input_leak_rate & 0xff0000) >> 16) | 0xc0;
++  descriptor->data[3] = (input_leak_rate & 0xff00) >> 8;
++  descriptor->data[4] = input_leak_rate & 0xff;
++  descriptor->data[5] = ((buffer_size & 0xff0000) >> 16) | 0xc0;
++  descriptor->data[6] = (buffer_size & 0xff00) >> 8;;
++  descriptor->data[7] = buffer_size & 0xff;
++  descriptor->data[8] = ((output_leak_rate & 0xff0000) >> 16) | 0xc0;
++  descriptor->data[9] = (output_leak_rate & 0xff00) >> 8;;
++  descriptor->data[10] = output_leak_rate & 0xff;
++
++  return descriptor;
++}
+diff --git a/gst-libs/gst/mpegts/gstmpegtsdescriptor.h b/gst-libs/gst/mpegts/gstmpegtsdescriptor.h
+index c73d31e..28c42fc 100644
+--- a/gst-libs/gst/mpegts/gstmpegtsdescriptor.h
++++ b/gst-libs/gst/mpegts/gstmpegtsdescriptor.h
+@@ -4,6 +4,7 @@
+  * 
+  * Authors:
+  *   Edward Hervey <edward@collabora.com>
++ *   Michael Fien <mfien@harris.com>
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Library General Public
+@@ -282,6 +283,17 @@ gboolean  gst_mpegts_descriptor_parse_ca (GstMpegtsDescriptor *descriptor,
+ 					  const guint8 **private_data,
+ 					  gsize *private_data_size);
+ 
++/* GST_MTS_DESC_METADATA (0x26) */
++GST_EXPORT
++GstMpegtsDescriptor *
++gst_mpegts_descriptor_from_metadata (guint application_format, guint format);
++
++/* GST_MTS_DESC_METADATA_STD (0x27) */
++GST_EXPORT
++GstMpegtsDescriptor *
++gst_mpegts_descriptor_from_metadata_std ( guint input_leak_rate,
++        guint buffer_size, guint output_leak_rate);
++
+ /* GST_MTS_DESC_ISO_639_LANGUAGE (0x0A) */
+ /**
+  * GstMpegtsISO639AudioType:
+diff --git a/gst/mpegtsdemux/gstmpegdesc.h b/gst/mpegtsdemux/gstmpegdesc.h
+index e4e6743..7519e17 100644
+--- a/gst/mpegtsdemux/gstmpegdesc.h
++++ b/gst/mpegtsdemux/gstmpegdesc.h
+@@ -68,6 +68,19 @@
+ #define DESC_REGISTRATION_additional_ident_info_len(desc)	((desc)[1] - 4)
+ #define DESC_REGISTRATION_additional_ident_info(desc)		(&(desc)[6])
+ 
++/* metadata_descriptor 0x26 */
++#define DESC_METADATA_application_format(desc)                  (GST_READ_UINT16_BE ((desc)+2))
++#define DESC_METADATA_format(desc)                              ((desc)[4])
++#define DESC_METADATA_format_identifier(desc)                   (GST_READ_UINT32_BE ((desc)+6))
++#define DESC_METADATA_service_id(desc)                          ((desc)[9])
++#define DESC_METADATA_decoder_config_flags(desc)                ((desc[10] >> 5) & 0x7)
++#define DESC_METADATA_dsm_cc_flags(desc)                        ((desc[10] >> 4) & 0x1)
++
++/* metadata_descriptor 0x27 */
++#define DESC_METADATA_input_leak_rate(desc)                     (GST_READ_UINT24_BE ((desc)+2) & 0x3fffff)
++#define DESC_METADATA_buffer_size(desc)                         (GST_READ_UINT24_BE ((desc)+5) & 0x3fffff)
++#define DESC_METADATA_output_leak_rate(desc)                    (GST_READ_UINT24_BE ((desc)+8) & 0x3fffff)
++
+ /* data_stream_alignment_descriptor */
+ #define DESC_DATA_STREAM_ALIGNMENT_alignment_type(desc)		((desc)[2])
+ 
+diff --git a/gst/mpegtsdemux/mpegtsbase.c b/gst/mpegtsdemux/mpegtsbase.c
+index ee2460c..60d043d 100644
+--- a/gst/mpegtsdemux/mpegtsbase.c
++++ b/gst/mpegtsdemux/mpegtsbase.c
+@@ -508,6 +508,7 @@ static guint32
+ get_registration_from_descriptors (GPtrArray * descriptors)
+ {
+   const GstMpegtsDescriptor *desc;
++  int offset;
+ 
+   if ((desc =
+           gst_mpegts_find_descriptor (descriptors,
+@@ -518,6 +519,26 @@ get_registration_from_descriptors (GPtrArray * descriptors)
+       return GST_READ_UINT32_BE (desc->data + 2);
+   }
+ 
++  /* ISO/IEC 13818-1:2013 Table 2-86 Metadata descriptor */
++  else if ((desc =
++          gst_mpegts_find_descriptor (descriptors, GST_MTS_DESC_METADATA))) {
++    if (G_UNLIKELY (desc->length < 9)) {
++      GST_WARNING ("Metadata descriptor with length < 9. (Corrupted ?)");
++    } else {
++      offset = 2;
++
++      if (GST_READ_UINT16_BE (desc->data + offset) == 0xFFFF)   //read metadata_application_format
++        offset += 4;            //skip metadata_application_format_identifier
++
++      offset += 2;              //skip metadata_application_format
++
++      if (GST_READ_UINT8 (desc->data + offset) == 0xFF) {       //read metadata_format
++        offset += 1;            //skip metadata_format
++        return GST_READ_UINT32_BE (desc->data + offset);        //read metadata_format_identifier
++      }
++    }
++  }
++
+   return 0;
+ }
+ 
+diff --git a/gst/mpegtsdemux/tsdemux.c b/gst/mpegtsdemux/tsdemux.c
+index 20357a8..a674fcf 100644
+--- a/gst/mpegtsdemux/tsdemux.c
++++ b/gst/mpegtsdemux/tsdemux.c
+@@ -49,6 +49,8 @@
+ #include <gst/codecparsers/gsth264parser.h>
+ #include <gst/codecparsers/gstmpegvideoparser.h>
+ 
++#include <gst/codecparsers/gstklvmeta.h>
++
+ #include <math.h>
+ 
+ #define _gst_log2(x) (log(x)/log(2))
+@@ -227,6 +229,9 @@ struct _TSDemuxStream
+       "stream-format = (string) adts; " \
+     "audio/mpeg, " \
+       "mpegversion = (int) 4, " \
++      "stream-format = (string) adts; " \
++    "audio/mpeg, " \
++      "mpegversion = (int) 4, " \
+       "stream-format = (string) loas; " \
+     "audio/x-lpcm, " \
+       "width = (int) { 16, 20, 24 }, " \
+@@ -1067,6 +1072,9 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
+   gboolean sparse = FALSE;
+   gboolean is_audio = FALSE, is_video = FALSE, is_subpicture = FALSE,
+       is_private = FALSE;
++  const GstMpegtsDescriptor *meta_desc = NULL;
++  const GstMpegtsDescriptor *meta_std_desc = NULL;
++  int version;
+ 
+   gst_ts_demux_create_tags (stream);
+ 
+@@ -1128,6 +1136,10 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
+ 
+   /* Handle non-BluRay stream types */
+   switch (bstream->stream_type) {
++    case GST_MPEGTS_STREAM_TYPE_VIDEO_JP2K:
++      is_video = TRUE;
++      caps = gst_caps_new_empty_simple ("image/jpeg");
++      break;
+     case GST_MPEGTS_STREAM_TYPE_VIDEO_MPEG1:
+     case GST_MPEGTS_STREAM_TYPE_VIDEO_MPEG2:
+     case ST_PS_VIDEO_MPEG2_DCII:
+@@ -1156,6 +1168,7 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
+       if (program->registration_id == DRF_ID_TSHV)
+         gst_caps_set_simple (caps, "layer", G_TYPE_INT, 2, NULL);
+       break;
++    case GST_MPEGTS_STREAM_TYPE_METADATA_PES_PACKETS:
+     case GST_MPEGTS_STREAM_TYPE_PRIVATE_PES_PACKETS:
+       GST_LOG ("private data");
+       /* FIXME: Move all of this into a common method (there might be other
+@@ -1390,8 +1403,30 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
+         case DRF_ID_KLVA:
+           sparse = TRUE;
+           is_private = TRUE;
+-          caps = gst_caps_new_simple ("meta/x-klv",
+-              "parsed", G_TYPE_BOOLEAN, TRUE, NULL);
++          meta_desc =
++              mpegts_get_descriptor_from_stream (bstream,
++              GST_MTS_DESC_METADATA);
++          meta_std_desc =
++              mpegts_get_descriptor_from_stream (bstream,
++              GST_MTS_DESC_METADATA_STD);
++          if (meta_desc && meta_std_desc) {
++            caps = gst_caps_new_simple ("meta/x-klv",
++                "parsed", G_TYPE_BOOLEAN, TRUE,
++                "stream_type", G_TYPE_INT, bstream->stream_type,
++                "application_format", G_TYPE_INT,
++                DESC_METADATA_application_format (meta_desc->data), "format",
++                G_TYPE_INT, DESC_METADATA_format (meta_desc->data),
++                "input_leak_rate", G_TYPE_INT,
++                DESC_METADATA_input_leak_rate (meta_std_desc->data),
++                "buffer_size", G_TYPE_INT,
++                DESC_METADATA_buffer_size (meta_std_desc->data),
++                "output_leak_rate", G_TYPE_INT,
++                DESC_METADATA_output_leak_rate (meta_std_desc->data), NULL);
++          } else {
++            caps = gst_caps_new_simple ("meta/x-klv",
++                "parsed", G_TYPE_BOOLEAN, TRUE,
++                "stream_type", G_TYPE_INT, bstream->stream_type, NULL);
++          }
+           break;
+       }
+       if (caps)
+@@ -1421,8 +1456,13 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
+       break;
+     case GST_MPEGTS_STREAM_TYPE_AUDIO_AAC_ADTS:
+       is_audio = TRUE;
++      version = 2;
++
++      if (mpegts_get_descriptor_from_stream (bstream, GST_MTS_DESC_MPEG4_AUDIO))
++        version = 4;
++
+       caps = gst_caps_new_simple ("audio/mpeg",
+-          "mpegversion", G_TYPE_INT, 2,
++          "mpegversion", G_TYPE_INT, version,
+           "stream-format", G_TYPE_STRING, "adts", NULL);
+       break;
+     case GST_MPEGTS_STREAM_TYPE_AUDIO_AAC_LATM:
+@@ -1936,7 +1976,13 @@ gst_ts_demux_program_started (MpegTSBase * base, MpegTSBaseProgram * program)
+          * pad already and which otherwise would only be sent on the first buffer
+          * or serialized event (which means very late in case of subtitle streams),
+          * and playsink waits for stream-start or another serialized event */
++        GstSegment segment;
++
+         GST_DEBUG_OBJECT (stream->pad, "sparse stream, pushing GAP event");
++        /* Push segment before gap event to avoid 'segment->format == format' failed error */
++        gst_segment_init (&segment, GST_FORMAT_TIME);
++        gst_pad_push_event (stream->pad, gst_event_new_segment (&segment));
++
+         gst_pad_push_event (stream->pad, gst_event_new_gap (0, 0));
+       }
+     }
+@@ -2653,6 +2699,26 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
+       buffer = gst_buffer_new_wrapped (stream->data, stream->current_size);
+     }
+ 
++    /* Set AU header metadata on buffer */
++    if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_METADATA_PES_PACKETS) {
++      GstKlvMeta meta;
++
++      meta.metadata_service_id = stream->data[0];
++      meta.sequence_number = stream->data[1];
++      meta.flags = stream->data[2];
++      meta.au_cell_data_length = (stream->data[3] << 8) | stream->data[4];
++
++      GST_DEBUG_OBJECT (stream->pad,
++          "Adding GstKlvMeta to buffer (metadata_service_id:%i, sequence_number:%i, flags:%i, au_cell_data_length:%i)",
++          meta.metadata_service_id, meta.sequence_number, meta.flags,
++          meta.au_cell_data_length);
++
++      gst_buffer_add_klv_meta (buffer, meta.metadata_service_id,
++          meta.sequence_number, meta.flags, meta.au_cell_data_length);
++      //Remove AU header. We'll add it back in the TS muxer
++      gst_buffer_resize (buffer, 5, gst_buffer_get_size (buffer) - 5);
++    }
++
+     if (G_UNLIKELY (stream->pending_ts && !check_pending_buffers (demux))) {
+       if (buffer) {
+         PendingBuffer *pend;
+diff --git a/gst/mpegtsmux/Makefile.am b/gst/mpegtsmux/Makefile.am
+index 0fa78d7..e6d9bd8 100644
+--- a/gst/mpegtsmux/Makefile.am
++++ b/gst/mpegtsmux/Makefile.am
+@@ -12,6 +12,7 @@ libgstmpegtsmux_la_CFLAGS = $(GST_PLUGINS_BAD_CFLAGS) $(GST_PLUGINS_BASE_CFLAGS)
+ 			    $(GST_BASE_CFLAGS) $(GST_CFLAGS)
+ libgstmpegtsmux_la_LIBADD = $(top_builddir)/gst/mpegtsmux/tsmux/libtsmux.la \
+ 	$(GST_PLUGINS_BASE_LIBS) -lgstvideo-@GST_API_VERSION@ \
++	$(top_builddir)/gst-libs/gst/codecparsers/libgstcodecparsers-$(GST_API_VERSION).la \
+ 	-lgstaudio-@GST_API_VERSION@ -lgsttag-@GST_API_VERSION@ \
+ 	-lgstpbutils-@GST_API_VERSION@ \
+ 	$(GST_BASE_LIBS) $(GST_LIBS)
+diff --git a/gst/mpegtsmux/mpegtsmux.c b/gst/mpegtsmux/mpegtsmux.c
+index f2a3dc9..5108e94 100644
+--- a/gst/mpegtsmux/mpegtsmux.c
++++ b/gst/mpegtsmux/mpegtsmux.c
+@@ -99,6 +99,8 @@
+ #include "mpegtsmux_ttxt.h"
+ #include "mpegtsmux_opus.h"
+ 
++#include <gst/codecparsers/gstklvmeta.h>
++
+ GST_DEBUG_CATEGORY (mpegtsmux_debug);
+ #define GST_CAT_DEFAULT mpegtsmux_debug
+ 
+@@ -121,19 +123,17 @@ static GstStaticPadTemplate mpegtsmux_sink_factory =
+     GST_PAD_SINK,
+     GST_PAD_REQUEST,
+     GST_STATIC_CAPS ("video/mpeg, "
+-        "parsed = (boolean) TRUE, "
+         "mpegversion = (int) { 1, 2, 4 }, "
+         "systemstream = (boolean) false; "
+         "video/x-dirac;"
++        "image/jpeg;"
+         "video/x-h264,stream-format=(string)byte-stream,"
+         "alignment=(string){au, nal}; "
+         "video/x-h265,stream-format=(string)byte-stream,"
+         "alignment=(string){au, nal}; "
+         "audio/mpeg, "
+-        "parsed = (boolean) TRUE, "
+         "mpegversion = (int) { 1, 2 };"
+         "audio/mpeg, "
+-        "framed = (boolean) TRUE, "
+         "mpegversion = (int) 4, stream-format = (string) adts;"
+         "audio/mpeg, "
+         "mpegversion = (int) 4, stream-format = (string) raw;"
+@@ -635,6 +635,8 @@ mpegtsmux_create_stream (MpegTsMux * mux, MpegTsPadData * ts_data)
+     st = TSMUX_ST_PS_AUDIO_LPCM;
+   } else if (strcmp (mt, "video/x-h264") == 0) {
+     st = TSMUX_ST_VIDEO_H264;
++  } else if (strcmp (mt, "image/jpeg") == 0) {
++    st = TSMUX_ST_VIDEO_JP2K;
+   } else if (strcmp (mt, "video/x-h265") == 0) {
+     st = TSMUX_ST_VIDEO_HEVC;
+   } else if (strcmp (mt, "audio/mpeg") == 0) {
+@@ -759,7 +761,12 @@ mpegtsmux_create_stream (MpegTsMux * mux, MpegTsPadData * ts_data)
+     st = TSMUX_ST_PS_OPUS;
+     ts_data->prepare_func = mpegtsmux_prepare_opus;
+   } else if (strcmp (mt, "meta/x-klv") == 0) {
++    gint stream_type;
+     st = TSMUX_ST_PS_KLV;
++    if (gst_structure_get_int (s, "stream_type", &stream_type)) {
++      if (stream_type == TSMUX_ST_METADATA)
++        st = TSMUX_ST_PS_SYNC_KLV;
++    }
+   }
+ 
+   if (st != TSMUX_ST_RESERVED) {
+@@ -776,6 +783,15 @@ mpegtsmux_create_stream (MpegTsMux * mux, MpegTsPadData * ts_data)
+ 
+     ts_data->stream->opus_channel_config_code = opus_channel_config_code;
+ 
++    gst_structure_get_int (s, "application_format",
++        &ts_data->stream->application_format);
++    gst_structure_get_int (s, "format", &ts_data->stream->format);
++    gst_structure_get_int (s, "input_leak_rate",
++        &ts_data->stream->input_leak_rate);
++    gst_structure_get_int (s, "buffer_size", &ts_data->stream->buffer_size);
++    gst_structure_get_int (s, "output_leak_rate",
++        &ts_data->stream->output_leak_rate);
++
+     tsmux_stream_set_buffer_release_func (ts_data->stream, release_buffer_cb);
+     tsmux_program_add_stream (ts_data->prog, ts_data->stream);
+ 
+@@ -1388,6 +1404,31 @@ mpegtsmux_collected_buffer (GstCollectPads * pads, GstCollectData * data,
+ 
+   GST_DEBUG_OBJECT (mux, "delta: %d", delta);
+ 
++  /* Get AU header metadata from buffer and add it to the head of buffer data */
++  if (best->stream->stream_type == TSMUX_ST_METADATA) {
++    GstKlvMeta *meta = gst_buffer_get_klv_meta (buf);
++    GstMemory *mem;
++    GstMapInfo map;
++
++    if (meta) {
++      GST_DEBUG ("KLV Data Mux %i %i %i %i", meta->metadata_service_id,
++          meta->sequence_number, meta->flags, meta->au_cell_data_length);
++
++      mem = gst_allocator_alloc (NULL, 5, NULL);
++      if (gst_memory_map (mem, &map, GST_MAP_WRITE)) {
++        map.data[0] = meta->metadata_service_id;
++        map.data[1] = meta->sequence_number;
++        map.data[2] = meta->flags;
++        map.data[3] = (meta->au_cell_data_length & 0xff00) >> 8;
++        map.data[4] = (meta->au_cell_data_length & 0xff);
++
++        gst_memory_unmap (mem, &map);
++        buf = gst_buffer_make_writable (buf);
++        gst_buffer_prepend_memory (buf, mem);
++      }
++    }
++  }
++
+   stream_data = stream_data_new (buf);
+   tsmux_stream_add_data (best->stream, stream_data->map_info.data,
+       stream_data->map_info.size, stream_data, pts, dts, !delta);
+diff --git a/gst/mpegtsmux/tsmux/tsmux.c b/gst/mpegtsmux/tsmux/tsmux.c
+index ee28704..ad6fda4 100644
+--- a/gst/mpegtsmux/tsmux/tsmux.c
++++ b/gst/mpegtsmux/tsmux/tsmux.c
+@@ -458,7 +458,7 @@ tsmux_program_set_pcr_stream (TsMuxProgram * program, TsMuxStream * stream)
+ {
+   g_return_if_fail (program != NULL);
+ 
+-  if (program->pcr_stream == stream)
++  if (program->pcr_stream == stream || stream->is_meta == TRUE)
+     return;
+ 
+   if (program->pcr_stream != NULL)
+@@ -534,6 +534,12 @@ tsmux_create_stream (TsMux * mux, TsMuxStreamType stream_type, guint16 pid,
+   else
+     g_strlcat (stream->language, "eng", 3 * sizeof (gchar));
+ 
++  stream->application_format = 256;
++  stream->format = 255;
++  stream->input_leak_rate = 0;
++  stream->buffer_size = 0;
++  stream->output_leak_rate = 0;
++
+   return stream;
+ }
+ 
+@@ -1104,6 +1110,9 @@ tsmux_write_stream_packet (TsMux * mux, TsMuxStream * stream)
+ 
+   gst_buffer_unmap (buf, &map);
+ 
++  /* Change GST_DEBUG_OBJECT to GST_DEBUG. Setting debug logging
++   * caused a segfault because mux is not a GST_OBJECT */
++  GST_DEBUG ("Writing PES of size %d", (int) gst_buffer_get_size (buf));
+   res = tsmux_packet_out (mux, buf, cur_pcr);
+ 
+   /* Reset all dynamic flags */
+diff --git a/gst/mpegtsmux/tsmux/tsmuxstream.c b/gst/mpegtsmux/tsmux/tsmuxstream.c
+index f719d8f..3356ce7 100644
+--- a/gst/mpegtsmux/tsmux/tsmuxstream.c
++++ b/gst/mpegtsmux/tsmux/tsmuxstream.c
+@@ -144,6 +144,12 @@ tsmux_stream_new (guint16 pid, TsMuxStreamType stream_type)
+       stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
+       stream->is_video_stream = TRUE;
+       break;
++    case TSMUX_ST_VIDEO_JP2K:
++      /* FIXME: Assign sequential IDs? */
++      stream->id = 0xE1;
++      stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
++      stream->is_video_stream = TRUE;
++      break;
+     case TSMUX_ST_AUDIO_AAC:
+     case TSMUX_ST_AUDIO_MPEG1:
+     case TSMUX_ST_AUDIO_MPEG2:
+@@ -196,6 +202,14 @@ tsmux_stream_new (guint16 pid, TsMuxStreamType stream_type)
+           TSMUX_PACKET_FLAG_PES_DATA_ALIGNMENT;
+ 
+       break;
++    case TSMUX_ST_PS_SYNC_KLV:
++      stream->id = 0xFC;
++      stream->stream_type = TSMUX_ST_METADATA;
++      stream->is_meta = TRUE;
++      stream->pi.flags |=
++          TSMUX_PACKET_FLAG_PES_FULL_HEADER |
++          TSMUX_PACKET_FLAG_PES_DATA_ALIGNMENT;
++      break;
+     case TSMUX_ST_PS_KLV:
+       /* FIXME: assign sequential extended IDs? */
+       stream->id = 0xBD;
+@@ -319,7 +333,7 @@ tsmux_stream_consume (TsMuxStream * stream, guint len)
+     g_slice_free (TsMuxStreamBuffer, stream->cur_buffer);
+     stream->cur_buffer = NULL;
+     /* FIXME: As a hack, for unbounded streams, start a new PES packet for each
+-     * incoming packet we receive. This assumes that incoming data is 
++     * incoming packet we receive. This assumes that incoming data is
+      * packetised sensibly - ie, every video frame */
+     if (stream->cur_pes_payload_size == 0) {
+       stream->state = TSMUX_STREAM_STATE_HEADER;
+@@ -546,7 +560,7 @@ tsmux_stream_pes_header_length (TsMuxStream * stream)
+   packet_len = 6;
+ 
+   if (stream->pi.flags & TSMUX_PACKET_FLAG_PES_FULL_HEADER) {
+-    /* For a PES 'full header' we have at least 3 more bytes, 
++    /* For a PES 'full header' we have at least 3 more bytes,
+      * and then more based on flags */
+     packet_len += 3;
+     if (stream->pi.flags & TSMUX_PACKET_FLAG_PES_WRITE_PTS_DTS) {
+@@ -555,7 +569,7 @@ tsmux_stream_pes_header_length (TsMuxStream * stream)
+       packet_len += 5;
+     }
+     if (stream->pi.flags & TSMUX_PACKET_FLAG_PES_EXT_STREAMID) {
+-      /* Need basic extension flags (1 byte), plus 2 more bytes for the 
++      /* Need basic extension flags (1 byte), plus 2 more bytes for the
+        * length + extended stream id */
+       packet_len += 3;
+     }
+@@ -647,7 +661,7 @@ tsmux_stream_write_pes_header (TsMuxStream * stream, guint8 * data)
+       flags |= 0x01;            /* Enable PES_extension_flag */
+     *data++ = flags;
+ 
+-    /* Header length is the total pes length, 
++    /* Header length is the total pes length,
+      * minus the 9 bytes of start codes, flags + hdr_len */
+     g_return_if_fail (hdr_len >= 9);
+     *data++ = (hdr_len - 9);
+@@ -923,6 +937,7 @@ tsmux_stream_get_es_descrs (TsMuxStream * stream,
+        * that should never happen anyway as
+        * dvb subtitles are private data */
+     case TSMUX_ST_PRIVATE_DATA:
++    case TSMUX_ST_METADATA:
+       if (stream->is_dvb_sub) {
+         GST_DEBUG ("Stream language %s", stream->language);
+         /* Simple DVB subtitles with no monitor aspect ratio critical
+@@ -948,8 +963,22 @@ tsmux_stream_get_es_descrs (TsMuxStream * stream,
+         g_ptr_array_add (pmt_stream->descriptors, descriptor);
+       }
+       if (stream->is_meta) {
+-        descriptor = gst_mpegts_descriptor_from_registration ("KLVA", NULL, 0);
+-        GST_DEBUG ("adding KLVA registration descriptor");
++        if (stream->stream_type == TSMUX_ST_PRIVATE_DATA) {
++          descriptor =
++              gst_mpegts_descriptor_from_registration ("KLVA", NULL, 0);
++          GST_DEBUG ("adding KLVA registration descriptor");
++          g_ptr_array_add (pmt_stream->descriptors, descriptor);
++        }
++        descriptor =
++            gst_mpegts_descriptor_from_metadata (stream->application_format,
++            stream->format);
++        GST_DEBUG ("adding KLVA metadata descriptor");
++        g_ptr_array_add (pmt_stream->descriptors, descriptor);
++
++        descriptor =
++            gst_mpegts_descriptor_from_metadata_std (stream->input_leak_rate,
++            stream->buffer_size, stream->output_leak_rate);
++        GST_DEBUG ("adding KLVA metadata descriptor std");
+         g_ptr_array_add (pmt_stream->descriptors, descriptor);
+       }
+     default:
+diff --git a/gst/mpegtsmux/tsmux/tsmuxstream.h b/gst/mpegtsmux/tsmux/tsmuxstream.h
+index 2766718..c898897 100644
+--- a/gst/mpegtsmux/tsmux/tsmuxstream.h
++++ b/gst/mpegtsmux/tsmux/tsmuxstream.h
+@@ -132,7 +132,9 @@ enum TsMuxStreamType {
+   /* later extensions */
+   TSMUX_ST_AUDIO_AAC                  = 0x0f,
+   TSMUX_ST_VIDEO_MPEG4                = 0x10,
++  TSMUX_ST_METADATA                   = 0x15,
+   TSMUX_ST_VIDEO_H264                 = 0x1b,
++  TSMUX_ST_VIDEO_JP2K                 = 0x21,
+   TSMUX_ST_VIDEO_HEVC                 = 0x24,
+ 
+   /* private stream types */
+@@ -143,6 +145,7 @@ enum TsMuxStreamType {
+   TSMUX_ST_PS_TELETEXT                = 0x8d,
+   TSMUX_ST_PS_KLV                     = 0x8e,    /* only used internally */
+   TSMUX_ST_PS_OPUS                    = 0x8f,    /* only used internally */
++  TSMUX_ST_PS_SYNC_KLV                = 0x90,    /* only used internally */
+   TSMUX_ST_PS_DVD_SUBPICTURE          = 0xff,
+ 
+   /* Non-standard definitions */
+@@ -207,6 +210,13 @@ struct TsMuxStream {
+   gint audio_channels;
+   gint audio_bitrate;
+ 
++  /* KLV Metadata descriptor details */
++  gint application_format;
++  gint format;
++  gint input_leak_rate;
++  gint buffer_size;
++  gint output_leak_rate;
++
+   gboolean is_dvb_sub;
+   gchar language[4];
+ 
+@@ -224,12 +234,12 @@ void 		tsmux_stream_free 		(TsMuxStream *stream);
+ 
+ guint16         tsmux_stream_get_pid            (TsMuxStream *stream);
+ 
+-void 		tsmux_stream_set_buffer_release_func 	(TsMuxStream *stream, 
++void 		tsmux_stream_set_buffer_release_func 	(TsMuxStream *stream,
+        							 TsMuxStreamBufferReleaseFunc func);
+ 
+ /* Add a new buffer to the pool of available bytes. If pts or dts are not -1, they
+  * indicate the PTS or DTS of the first access unit within this packet */
+-void 		tsmux_stream_add_data 		(TsMuxStream *stream, guint8 *data, guint len, 
++void 		tsmux_stream_add_data 		(TsMuxStream *stream, guint8 *data, guint len,
+        						 void *user_data, gint64 pts, gint64 dts,
+                                                  gboolean random_access);
+ 
+-- 
+2.7.4
+

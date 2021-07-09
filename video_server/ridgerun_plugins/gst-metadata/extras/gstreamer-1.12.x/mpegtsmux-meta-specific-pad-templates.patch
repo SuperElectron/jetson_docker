@@ -1,0 +1,182 @@
+From 0b79187eaf255ca57a923f78ee2445b3f746b599 Mon Sep 17 00:00:00 2001
+From: Greivin Fallas <greivin.fallas@ridgerun.com>
+Date: Thu, 26 Nov 2020 01:11:57 -0600
+Subject: [PATCH] Mpegtsmux meta-specific pad templates
+
+---
+ gst/mpegtsmux/mpegtsmux.c | 105 +++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 90 insertions(+), 15 deletions(-)
+
+diff --git a/gst/mpegtsmux/mpegtsmux.c b/gst/mpegtsmux/mpegtsmux.c
+index 926294a..f2a3dc9 100644
+--- a/gst/mpegtsmux/mpegtsmux.c
++++ b/gst/mpegtsmux/mpegtsmux.c
+@@ -151,6 +151,12 @@ static GstStaticPadTemplate mpegtsmux_sink_factory =
+         "channel-mapping-family = (int) {0, 1};"
+         "subpicture/x-dvb; application/x-teletext; meta/x-klv, parsed=true"));
+ 
++static GstStaticPadTemplate mpegtsmux_meta_factory =
++GST_STATIC_PAD_TEMPLATE ("meta_%d",
++    GST_PAD_SINK,
++    GST_PAD_REQUEST,
++    GST_STATIC_CAPS ("meta/x-klv, parsed=true"));
++
+ static GstStaticPadTemplate mpegtsmux_src_factory =
+ GST_STATIC_PAD_TEMPLATE ("src",
+     GST_PAD_SRC,
+@@ -190,6 +196,10 @@ static gboolean mpegtsmux_sink_event (GstCollectPads * pads,
+     GstCollectData * data, GstEvent * event, gpointer user_data);
+ static GstPad *mpegtsmux_request_new_pad (GstElement * element,
+     GstPadTemplate * templ, const gchar * name, const GstCaps * caps);
++static GstPad *mpegtsmux_request_new_sink_pad (GstElement * element,
++    GstPadTemplate * templ, const gchar * name, gint * pid);
++static GstPad *mpegtsmux_request_new_meta_pad (GstElement * element,
++    GstPadTemplate * templ, const gchar * name, gint * pid);
+ static void mpegtsmux_release_pad (GstElement * element, GstPad * pad);
+ static GstStateChangeReturn mpegtsmux_change_state (GstElement * element,
+     GstStateChange transition);
+@@ -246,6 +256,8 @@ mpegtsmux_class_init (MpegTsMuxClass * klass)
+       &mpegtsmux_sink_factory);
+   gst_element_class_add_static_pad_template (gstelement_class,
+       &mpegtsmux_src_factory);
++  gst_element_class_add_static_pad_template (gstelement_class,
++      &mpegtsmux_meta_factory);
+ 
+   gst_element_class_set_static_metadata (gstelement_class,
+       "MPEG Transport Stream Muxer", "Codec/Muxer",
+@@ -597,6 +609,9 @@ mpegtsmux_create_stream (MpegTsMux * mux, MpegTsPadData * ts_data)
+ 
+   pad = ts_data->collect.pad;
+   caps = gst_pad_get_current_caps (pad);
++  if (caps == NULL && !strncmp (GST_PAD_NAME (pad), "meta", 4)) {
++    caps = gst_caps_from_string ("meta/x-klv,parsed=true");
++  }
+   if (caps == NULL)
+     goto not_negotiated;
+ 
+@@ -1423,27 +1438,31 @@ mpegtsmux_request_new_pad (GstElement * element, GstPadTemplate * templ,
+ {
+   MpegTsMux *mux = GST_MPEG_TSMUX (element);
+   gint pid = -1;
+-  gchar *pad_name = NULL;
+   GstPad *pad = NULL;
+   MpegTsPadData *pad_data = NULL;
++  gboolean is_meta = FALSE;
+ 
+-  if (name != NULL && sscanf (name, "sink_%d", &pid) == 1) {
+-    if (tsmux_find_stream (mux->tsmux, pid))
+-      goto stream_exists;
++  if (!g_strcmp0 (GST_PAD_TEMPLATE_NAME_TEMPLATE (templ), "meta_%d")) {
++    pad = mpegtsmux_request_new_meta_pad (element, templ, name, &pid);
++    is_meta = TRUE;
+   } else {
+-    pid = tsmux_get_new_pid (mux->tsmux);
++    pad = mpegtsmux_request_new_sink_pad (element, templ, name, &pid);
++    is_meta = FALSE;
+   }
+ 
+-  pad_name = g_strdup_printf ("sink_%d", pid);
+-  pad = gst_pad_new_from_template (templ, pad_name);
+-  g_free (pad_name);
+-
+   pad_data = (MpegTsPadData *)
+       gst_collect_pads_add_pad (mux->collect, pad, sizeof (MpegTsPadData),
+       (GstCollectDataDestroyNotify) (mpegtsmux_pad_reset), TRUE);
+   if (pad_data == NULL)
+     goto pad_failure;
+ 
++  if (is_meta) {
++    GST_COLLECT_PADS_STATE_UNSET (pad_data, GST_COLLECT_PADS_STATE_LOCKED);
++    gst_collect_pads_set_waiting (mux->collect, (GstCollectData *) pad_data,
++        FALSE);
++    GST_COLLECT_PADS_STATE_SET (pad_data, GST_COLLECT_PADS_STATE_LOCKED);
++  }
++
+   mpegtsmux_pad_reset (pad_data);
+   pad_data->pid = pid;
+ 
+@@ -1453,12 +1472,6 @@ mpegtsmux_request_new_pad (GstElement * element, GstPadTemplate * templ,
+   return pad;
+ 
+   /* ERRORS */
+-stream_exists:
+-  {
+-    GST_ELEMENT_ERROR (element, STREAM, MUX, ("Duplicate PID requested"),
+-        (NULL));
+-    return NULL;
+-  }
+ could_not_add:
+   {
+     GST_ELEMENT_ERROR (element, STREAM, FAILED,
+@@ -1476,6 +1489,68 @@ pad_failure:
+   }
+ }
+ 
++static GstPad *
++mpegtsmux_request_new_sink_pad (GstElement * element, GstPadTemplate * templ,
++    const gchar * name, gint * pid)
++{
++  MpegTsMux *mux = GST_MPEG_TSMUX (element);
++  gchar *pad_name = NULL;
++  GstPad *pad = NULL;
++
++  if (name != NULL && sscanf (name, "sink_%d", pid) == 1) {
++    if (tsmux_find_stream (mux->tsmux, *pid))
++      goto stream_exists;
++  } else {
++    *pid = tsmux_get_new_pid (mux->tsmux);
++  }
++
++  pad_name = g_strdup_printf ("sink_%d", *pid);
++  pad = gst_pad_new_from_template (templ, pad_name);
++  g_free (pad_name);
++
++  return pad;
++
++  /* ERRORS */
++stream_exists:
++  {
++    *pid = -1;
++    GST_ELEMENT_ERROR (element, STREAM, MUX, ("Duplicate PID requested"),
++        (NULL));
++    return NULL;
++  }
++}
++
++static GstPad *
++mpegtsmux_request_new_meta_pad (GstElement * element, GstPadTemplate * templ,
++    const gchar * name, gint * pid)
++{
++  MpegTsMux *mux = GST_MPEG_TSMUX (element);
++  gchar *pad_name = NULL;
++  GstPad *pad = NULL;
++
++  if (name != NULL && sscanf (name, "meta_%d", pid) == 1) {
++    if (tsmux_find_stream (mux->tsmux, *pid))
++      goto stream_exists;
++  } else {
++    *pid = tsmux_get_new_pid (mux->tsmux);
++  }
++
++  pad_name = g_strdup_printf ("meta_%d", *pid);
++  pad = gst_pad_new_from_template (templ, pad_name);
++  g_free (pad_name);
++
++  return pad;
++
++  /* ERRORS */
++stream_exists:
++  {
++    *pid = -1;
++    GST_ELEMENT_ERROR (element, STREAM, MUX, ("Duplicate PID requested"),
++        (NULL));
++    return NULL;
++  }
++}
++
+ static void
+ mpegtsmux_release_pad (GstElement * element, GstPad * pad)
+ {
+-- 
+2.7.4
+

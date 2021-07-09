@@ -1,0 +1,18 @@
+prefix=
+exec_prefix=
+libdir=@gllibdir@
+includedir=/video_server/ridgerun_plugins/gst-plugins-base/gst-libs
+girdir=/video_server/ridgerun_plugins/gst-plugins-base/gst-libs/gst/base
+typelibdir=/video_server/ridgerun_plugins/gst-plugins-base/gst-libs/gst/base
+gl_platforms=glx egl 
+gl_winsys=wayland x11 
+gl_apis=gles2 gl 
+
+Name: GStreamer OpenGL Plugins Libraries, Uninstalled
+Description: Streaming media framework, OpenGL plugins libraries, uninstalled
+Version: 1.14.5
+Requires: gstreamer-video-1.0 gstreamer-base-1.0 gstreamer-1.0
+
+Libs: -L${libdir} -lgstgl-1.0
+Cflags: -I/video_server/ridgerun_plugins/gst-plugins-base/gst-libs -I/video_server/ridgerun_plugins/gst-plugins-base/gst-libs    -I/usr/include/libdrm
+

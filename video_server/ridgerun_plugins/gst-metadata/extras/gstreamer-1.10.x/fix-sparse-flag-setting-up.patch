@@ -1,0 +1,49 @@
+From ac54718a3dfce72aed198f716291f5a6d9f7ae9e Mon Sep 17 00:00:00 2001
+From: Edison Fernandez <edison.fernandez@ridgerun.com>
+Date: Tue, 15 Dec 2020 10:40:02 -0600
+Subject: [PATCH] fix sparse flag setting up
+
+---
+ libs/gst/base/gstcollectpads.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/libs/gst/base/gstcollectpads.c b/libs/gst/base/gstcollectpads.c
+index a19edf3..c0cf42f 100644
+--- a/libs/gst/base/gstcollectpads.c
++++ b/libs/gst/base/gstcollectpads.c
+@@ -1439,7 +1439,9 @@ gst_collect_pads_recalculate_waiting (GstCollectPads * pads)
+       if (!GST_COLLECT_PADS_STATE_IS_SET (data, GST_COLLECT_PADS_STATE_WAITING)) {
+         /* start waiting */
+         gst_collect_pads_set_waiting (pads, data, TRUE);
+-        result = TRUE;
++        if (!GST_COLLECT_PADS_STATE_IS_SET (data,
++                GST_COLLECT_PADS_STATE_LOCKED))
++          result = TRUE;
+       }
+     }
+   }
+@@ -1571,6 +1573,10 @@ gst_collect_pads_default_collected (GstCollectPads * pads, gpointer user_data)
+    * so re-check to restore state to avoid hanging/waiting */
+   gst_collect_pads_recalculate_full (pads);
+ 
++  if (!GST_COLLECT_PADS_STATE_IS_SET (best, GST_COLLECT_PADS_STATE_WAITING)) {
++    return gst_collect_pads_default_collected (pads, NULL);
++  }
++
+ done:
+   return ret;
+ }
+@@ -1690,8 +1696,8 @@ gst_collect_pads_event_default (GstCollectPads * pads, GstCollectData * data,
+     {
+       if (g_atomic_int_get (&pads->priv->seeking)) {
+         /* drop all but the first FLUSH_STARTs when seeking */
+-        if (!g_atomic_int_compare_and_exchange (&pads->
+-                priv->pending_flush_start, TRUE, FALSE))
++        if (!g_atomic_int_compare_and_exchange (&pads->priv->
++                pending_flush_start, TRUE, FALSE))
+           goto eat;
+ 
+         /* unblock collect pads */
+-- 
+2.27.0
+

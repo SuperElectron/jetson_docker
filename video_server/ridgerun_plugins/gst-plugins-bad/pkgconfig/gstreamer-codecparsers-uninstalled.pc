@@ -1,0 +1,12 @@
+prefix=
+exec_prefix=
+libdir=@codecparserslibdir@
+includedir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+
+Name: GStreamer codec parsers, Uninstalled
+Description: Bitstream parsers for GStreamer elements, uninstalled
+Requires: gstreamer-1.0 gstreamer-base-1.0
+Version: 1.14.5
+Libs: -L${libdir} -lgstcodecparsers-1.0
+Cflags: -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+

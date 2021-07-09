@@ -1,0 +1,12 @@
+prefix=
+exec_prefix=
+libdir=@mpegtslibdir@
+includedir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+
+Name: GStreamer MPEG-TS, Uninstalled
+Description: GStreamer MPEG-TS support, uninstalled
+Requires: gstreamer-1.0 gstreamer-base-1.0
+Version: 1.14.5
+Libs: -L${libdir} -lgstmpegts-1.0
+Cflags: -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+

@@ -1,0 +1,14 @@
+prefix=
+exec_prefix=
+libdir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs/gst/video/.libs
+includedir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+girdir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs/gst/video
+typelibdir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs/gst/video
+
+Name: GStreamer bad video library, uninstalled
+Description: Bad video library for GStreamer elements, Not Installed
+Version: 1.14.5
+Requires: gstreamer-1.0 gstreamer-base-1.0
+
+Libs: -L${libdir} -lgstbadvideo-1.0
+Cflags: -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs

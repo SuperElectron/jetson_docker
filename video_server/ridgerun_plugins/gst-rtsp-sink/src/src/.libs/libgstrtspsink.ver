@@ -1,0 +1,7 @@
+{ global:
+gst_plugin_rtspsink_get_desc;
+gst_plugin_rtspsink_register;
+gst_rtsp_sink_get_type;
+gst_rtsp_sink_pad_get_type;
+gst_rtsp_sink_pad_new_from_template;
+local: *; };

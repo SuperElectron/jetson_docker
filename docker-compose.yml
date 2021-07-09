@@ -1,0 +1,36 @@
+---
+version: '3.3'
+
+services:
+
+  video_server:
+      container_name: video_server
+#      image: nvcr.io/nvidia/deepstream-l4t:5.1-21.02-samples
+      build: video_server
+      command: sleep infinity
+      tty: true
+      stdin_open: true
+      runtime: nvidia
+      volumes:
+        - ./video_server/server:/video_server/server
+        - /tmp/.X11-unix/:/tmp/.X11-unix
+        - ./videos:/videos
+      ports:
+        - "8554:8554"
+        - "9000:9000"
+      environment:
+        - TZ=America/Vancouver
+        - DEBIAN_FRONTEND=noninteractive
+        - DISPLAY=$DISPLAY
+      networks:
+        media_server:
+          ipv4_address: 172.22.0.4
+
+networks:
+  media_server:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+      - subnet: 172.22.0.0/24
+

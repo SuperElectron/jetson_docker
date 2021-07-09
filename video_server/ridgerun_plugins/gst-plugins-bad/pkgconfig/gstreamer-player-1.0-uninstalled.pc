@@ -1,0 +1,12 @@
+prefix=
+exec_prefix=
+libdir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs/gst/player/.libs
+includedir=/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+
+Name: GStreamer Player, Uninstalled
+Description: GStreamer Player convenience library, uninstalled
+Requires: gstreamer-1.0 gstreamer-video-1.0
+Version: 1.14.5
+Libs: -L${libdir} -lgstplayer-1.0
+Cflags: -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs -I/video_server/ridgerun_plugins/gst-plugins-bad/gst-libs
+

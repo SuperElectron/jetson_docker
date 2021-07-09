@@ -1,0 +1,7 @@
+config PROPRIETARY_GSTREAMER_PLUGIN_META
+       bool "gst-plugin-meta-1.0"
+       select FS_APPS_GSTREAMER_PLUGINS_BASE_1_8
+       select FS_APPS_GSTREAMER_1_8
+       default y
+       help
+       This option enables the gstreamer plugin meta 1.0

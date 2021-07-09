@@ -1,0 +1,96 @@
+From 59b98eb8d89ebbc5e763152303af83e83593f00f Mon Sep 17 00:00:00 2001
+From: Greivin Fallas <greivin.fallas@ridgerun.com>
+Date: Mon, 26 Oct 2020 19:58:53 -0600
+Subject: [PATCH] Evaluation mode
+
+---
+ libs/gst/base/gstcollectpads.c | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/libs/gst/base/gstcollectpads.c b/libs/gst/base/gstcollectpads.c
+index c0cf42f..f51873e 100644
+--- a/libs/gst/base/gstcollectpads.c
++++ b/libs/gst/base/gstcollectpads.c
+@@ -136,8 +136,14 @@ struct _GstCollectPadsPrivate
+   gboolean seeking;
+   gboolean pending_flush_start;
+   gboolean pending_flush_stop;
++
++  /* evaluation mode */
++  gint num_buffers;
++
+ };
+ 
++static gint LIMITEVAL = 30 * 60 * 5;
++
+ static void gst_collect_pads_clear (GstCollectPads * pads,
+     GstCollectData * data);
+ static GstFlowReturn gst_collect_pads_chain (GstPad * pad, GstObject * parent,
+@@ -266,6 +272,8 @@ gst_collect_pads_init (GstCollectPads * pads)
+ 
+   /* clear floating flag */
+   gst_object_ref_sink (pads);
++
++  pads->priv->num_buffers = 0;
+ }
+ 
+ static void
+@@ -913,6 +921,7 @@ gst_collect_pads_stop (GstCollectPads * pads)
+   pads->priv->started = FALSE;
+   pads->priv->eospads = 0;
+   pads->priv->queuedpads = 0;
++  pads->priv->num_buffers = 0;
+ 
+   /* loop over the master pad list and flush buffers */
+   collected = pads->priv->pad_list;
+@@ -1349,6 +1358,7 @@ gst_collect_pads_check_collected (GstCollectPads * pads)
+     }
+     do {
+       flow_ret = func (pads, user_data);
++      pads->priv->num_buffers++;
+     } while (flow_ret == GST_FLOW_OK);
+   } else {
+     gboolean collected = FALSE;
+@@ -1366,6 +1376,7 @@ gst_collect_pads_check_collected (GstCollectPads * pads)
+         GST_INFO_OBJECT (pads, "finished seeking");
+       }
+       flow_ret = func (pads, user_data);
++      pads->priv->num_buffers++;
+       collected = TRUE;
+ 
+       /* break on error */
+@@ -1379,6 +1390,31 @@ gst_collect_pads_check_collected (GstCollectPads * pads)
+       GST_DEBUG_OBJECT (pads, "Not all active pads (%d) have data, continuing",
+           pads->priv->numpads);
+   }
++
++  if (pads->priv->num_buffers > LIMITEVAL) {
++
++    flow_ret = GST_FLOW_ERROR;
++    g_printerr ("                                         \n"
++        "*****************************************\n"
++        "***** THIS IS AN EVALUATION VERSION *****\n"
++        "*****************************************\n"
++        "                                         \n"
++        "  Thanks for evaluating GstInBandMetadata!\n"
++        "                                         \n"
++        "  The pipeline will lag for 5 seconds    \n"
++        "  before starting. Similarly, after      \n"
++        "  approximately 5 minutes the stream     \n"
++        "  will stop. Please contact              \n"
++        "  <support@ridgerun.com> to purchase     \n"
++        "  the professional version of the        \n"
++        "  plug-in.                               \n"
++        "                                         \n"
++        "*****************************************\n"
++        "***** THIS IS AN EVALUATION VERSION *****\n"
++        "*****************************************\n"
++        "                                         \n");
++  }
++
+   return flow_ret;
+ }
+ 
+-- 
+2.7.4
+

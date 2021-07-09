@@ -1,0 +1,1 @@
+dot -Tpng file.dot > file.png
