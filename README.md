@@ -53,8 +53,8 @@ jetson_docker $ tree -I 'ridgerun_plugins'
 ├── docker-compose.yml
 ├── README.md
 ├── videos
-│   ├── TeraSense.Red.Boat_EO.ts
-│   └── TeraSense.Red.Boat_IR.ts
+│   ├── Tvideo1.ts
+│   └── video2.ts
 └── video_server
     |── ridgerun_plugins
     ├── Dockerfile
