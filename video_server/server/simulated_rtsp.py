@@ -604,10 +604,8 @@ if __name__ == '__main__':
 
     args = sys.argv
     args.append('H264')
-    video_eo = '/videos/TeraSense.Red.Boat_EO.ts'
-    video_ir = '/videos/TeraSense.Red.Boat_IR.ts'
-    # video_eo = '/home/nvidia/code/jetson_docker/videos/TeraSense.Red.Boat_EO.ts'
-    # video_ir = '/home/nvidia/code/jetson_docker/videos/TeraSense.Red.Boat_IR.ts'
+    video_eo = '/videos/video1.ts'
+    video_ir = '/videos/video2.ts'
 
     GObject.threads_init()
     Gst.init(None)
